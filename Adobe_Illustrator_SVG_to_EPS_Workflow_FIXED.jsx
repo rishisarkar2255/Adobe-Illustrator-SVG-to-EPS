@@ -5,12 +5,7 @@
     var ART_TOP = -2000;
     var ART_WIDTH = 7000;
     var ART_HEIGHT = 4000;
-    var ART_RECT = [
-        ART_LEFT,
-        ART_TOP,
-        ART_LEFT + ART_WIDTH,
-        ART_TOP - ART_HEIGHT
-    ];
+    var ART_RECT = [ART_LEFT, ART_TOP, ART_LEFT + ART_WIDTH, ART_TOP - ART_HEIGHT];
 
     function getBounds(item) {
         try { return item.visibleBounds; } catch (e) {}
@@ -21,309 +16,197 @@
     function widthOf(b) { return b ? Math.abs(b[2] - b[0]) : 0; }
     function heightOf(b) { return b ? Math.abs(b[1] - b[3]) : 0; }
 
-    function unionBounds(items) {
-        var u = null;
-        for (var i = 0; i < items.length; i++) {
-            var b = getBounds(items[i]);
-            if (!b) continue;
-            if (!u) {
-                u = [b[0], b[1], b[2], b[3]];
-            } else {
-                u[0] = Math.min(u[0], b[0]);
-                u[1] = Math.max(u[1], b[1]);
-                u[2] = Math.max(u[2], b[2]);
-                u[3] = Math.min(u[3], b[3]);
-            }
-        }
-        return u;
-    }
-
-    function isWhite(color) {
+    function isWhiteColor(color) {
         if (!color) return false;
         try {
             if (color.typename === "RGBColor") {
-                return color.red >= 253 && color.green >= 253 && color.blue >= 253;
+                return color.red >= 250 && color.green >= 250 && color.blue >= 250;
             }
             if (color.typename === "GrayColor") {
-                return color.gray >= 98;
+                return color.gray >= 95;
             }
             if (color.typename === "CMYKColor") {
-                return color.cyan <= 1.5 && color.magenta <= 1.5 &&
-                       color.yellow <= 1.5 && color.black <= 1.5;
-            }
-            if (color.typename === "SpotColor") {
-                return isWhite(color.spot.color);
+                return color.cyan <= 2 && color.magenta <= 2 && color.yellow <= 2 && color.black <= 2;
             }
         } catch (e) {}
         return false;
     }
 
-    function isLikelyWhiteBackground(path, contentBounds) {
-        if (!path || path.typename !== "PathItem" || !contentBounds) return false;
-        try {
-            if (!path.filled || path.stroked || !path.closed) return false;
-            if (path.pathPoints.length > 12 || !isWhite(path.fillColor)) return false;
-
-            var b = getBounds(path);
-            var cw = widthOf(contentBounds), ch = heightOf(contentBounds);
-            var pw = widthOf(b), ph = heightOf(b);
-            if (!b || cw <= 0 || ch <= 0 || pw <= 0 || ph <= 0) return false;
-
-            var tolX = cw * 0.04;
-            var tolY = ch * 0.04;
-
-            var coversContent = b[0] <= contentBounds[0] + tolX &&
-                                b[1] >= contentBounds[1] - tolY &&
-                                b[2] >= contentBounds[2] - tolX &&
-                                b[3] <= contentBounds[3] + tolY;
-
-            var substantiallyLarger = pw >= cw * 0.90 && ph >= ch * 0.90;
-            return coversContent && substantiallyLarger;
-        } catch (e) {
-            return false;
-        }
-    }
-
-    function getNonWhiteVectorBounds(doc) {
-        var items = [];
-        for (var i = 0; i < doc.pathItems.length; i++) {
-            var p = doc.pathItems[i];
-            try {
-                if (p.hidden || p.guides || p.clipping) continue;
-                if (p.filled && isWhite(p.fillColor) && !p.stroked) continue;
-                items.push(p);
-            } catch (e) {}
-        }
-        return unionBounds(items);
-    }
-
-    function isImageItem(item) {
-        try {
-            return item.typename === "PlacedItem" ||
-                   item.typename === "RasterItem";
-        } catch (e) {
-            return false;
-        }
-    }
-
-    function getVectorBounds(doc) {
-        var paths = [];
-        for (var i = 0; i < doc.pathItems.length; i++) {
-            var p = doc.pathItems[i];
-            try {
-                if (!p.hidden && !p.guides && !p.clipping) paths.push(p);
-            } catch (e) {}
-        }
-        return unionBounds(paths);
-    }
-
-    function isLikelyFullBackgroundImage(item, vectorBounds) {
-        if (!item || !isImageItem(item) || !vectorBounds) return false;
-        try {
-            if (item.hidden || item.locked) return false;
-            var b = getBounds(item);
-            var vw = widthOf(vectorBounds), vh = heightOf(vectorBounds);
-            var iw = widthOf(b), ih = heightOf(b);
-            if (!b || vw <= 0 || vh <= 0 || iw <= 0 || ih <= 0) return false;
-
-            var overlapLeft = Math.max(b[0], vectorBounds[0]);
-            var overlapTop = Math.min(b[1], vectorBounds[1]);
-            var overlapRight = Math.min(b[2], vectorBounds[2]);
-            var overlapBottom = Math.max(b[3], vectorBounds[3]);
-            var overlapW = Math.max(0, overlapRight - overlapLeft);
-            var overlapH = Math.max(0, overlapTop - overlapBottom);
-            var vectorCoverage = (overlapW * overlapH) / (vw * vh);
-
-            var containsVector = b[0] <= vectorBounds[0] + vw * 0.025 &&
-                                 b[1] >= vectorBounds[1] - vh * 0.025 &&
-                                 b[2] >= vectorBounds[2] - vw * 0.025 &&
-                                 b[3] <= vectorBounds[3] + vh * 0.025;
-
-            return containsVector && vectorCoverage >= 0.97 &&
-                   iw >= vw * 0.97 && ih >= vh * 0.97;
-        } catch (e) {
-            return false;
-        }
-    }
-
-    function removeFullBackgroundImages(doc, vectorBounds) {
+    function removeAllWhiteElements(doc) {
         var removed = 0;
-        for (var i = doc.pageItems.length - 1; i >= 0; i--) {
-            var item = doc.pageItems[i];
-            if (isLikelyFullBackgroundImage(item, vectorBounds)) {
-                try {
-                    item.remove();
+
+        // সব white fill paths এবং shapes remove করো
+        for (var i = doc.pathItems.length - 1; i >= 0; i--) {
+            try {
+                var path = doc.pathItems[i];
+                if (path.filled && isWhiteColor(path.fillColor) && !path.stroked) {
+                    path.remove();
                     removed++;
-                } catch (e) {}
-            }
+                }
+            } catch (e) {}
         }
-        return removed;
-    }
 
-    function getTopLevelItems(doc) {
-        var items = [];
-        for (var li = 0; li < doc.layers.length; li++) {
-            var layer = doc.layers[li];
-            if (!layer.visible || layer.locked) continue;
-
-            for (var pi = layer.pageItems.length - 1; pi >= 0; pi--) {
-                var item = layer.pageItems[pi];
-                try {
-                    if (item.parent === layer && !item.locked && !item.hidden) {
-                        items.push(item);
-                    }
-                } catch (e) {}
-            }
-        }
-        return items;
-    }
-
-    function removeLiveText(doc) {
-        var removed = 0;
-        for (var i = doc.textFrames.length - 1; i >= 0; i--) {
+        // সব text remove করো
+        for (var j = doc.textFrames.length - 1; j >= 0; j--) {
             try {
-                doc.textFrames[i].remove();
+                doc.textFrames[j].remove();
                 removed++;
             } catch (e) {}
         }
+
+        // সব compound paths check করো
+        for (var k = doc.compoundPathItems.length - 1; k >= 0; k--) {
+            try {
+                var cp = doc.compoundPathItems[k];
+                if (cp.filled && isWhiteColor(cp.fillColor) && !cp.stroked) {
+                    cp.remove();
+                    removed++;
+                }
+            } catch (e) {}
+        }
+
         return removed;
     }
 
-    function resetAndVerifyArtboard(doc) {
-        if (!doc.artboards || doc.artboards.length < 1) {
-            doc.artboards.add(ART_RECT);
-        } else {
-            doc.artboards[0].artboardRect = ART_RECT;
-        }
-
-        var actual = doc.artboards[0].artboardRect;
-        for (var i = 0; i < 4; i++) {
-            if (Math.abs(actual[i] - ART_RECT[i]) > 0.1) {
-                throw new Error("Artboard position/size verification failed. Actual: " + actual.join(", "));
+    function setArtboardRect(doc) {
+        try {
+            if (!doc.artboards || doc.artboards.length === 0) {
+                doc.artboards.add(ART_RECT);
             }
+            doc.artboards[0].artboardRect = ART_RECT;
+            return true;
+        } catch (e) {
+            return false;
         }
     }
 
-    function chooseUnlockedLayer(doc) {
-        for (var i = 0; i < doc.layers.length; i++) {
-            if (doc.layers[i].visible && !doc.layers[i].locked) return doc.layers[i];
+    function centerArtwork(doc) {
+        try {
+            var allItems = [];
+            for (var i = 0; i < doc.layers.length; i++) {
+                var layer = doc.layers[i];
+                if (layer.visible && !layer.locked) {
+                    for (var j = 0; j < layer.pageItems.length; j++) {
+                        allItems.push(layer.pageItems[j]);
+                    }
+                }
+            }
+
+            if (allItems.length === 0) return false;
+
+            var bounds = null;
+            for (var k = 0; k < allItems.length; k++) {
+                var b = getBounds(allItems[k]);
+                if (b) {
+                    if (!bounds) {
+                        bounds = [b[0], b[1], b[2], b[3]];
+                    } else {
+                        bounds[0] = Math.min(bounds[0], b[0]);
+                        bounds[1] = Math.max(bounds[1], b[1]);
+                        bounds[2] = Math.max(bounds[2], b[2]);
+                        bounds[3] = Math.min(bounds[3], b[3]);
+                    }
+                }
+            }
+
+            if (!bounds) return false;
+
+            var centerX = ART_LEFT + ART_WIDTH / 2;
+            var centerY = ART_TOP - ART_HEIGHT / 2;
+            var offsetX = centerX - (bounds[0] + bounds[2]) / 2;
+            var offsetY = centerY - (bounds[1] + bounds[3]) / 2;
+
+            for (var m = 0; m < allItems.length; m++) {
+                try {
+                    allItems[m].translate(offsetX, offsetY);
+                } catch (e) {}
+            }
+
+            return true;
+        } catch (e) {
+            return false;
         }
-        return null;
+    }
+
+    function savePNG(doc, outputPath) {
+        try {
+            var pngOptions = new ExportOptionsPNG24();
+            pngOptions.antiAliasing = true;
+            pngOptions.transparency = true;
+            pngOptions.interlaced = false;
+
+            var file = new File(outputPath);
+            doc.exportFile(file, ExportType.PNG24, pngOptions);
+            return true;
+        } catch (e) {
+            return false;
+        }
     }
 
     function processFile(svgFile, outputFolder) {
         var doc = null;
         try {
             doc = app.open(svgFile);
-            resetAndVerifyArtboard(doc);
 
-            var textRemoved = removeLiveText(doc);
-
-            var contentBounds = getNonWhiteVectorBounds(doc);
-            var allItemsBeforeCleanup = getTopLevelItems(doc);
-            var fallbackBounds = unionBounds(allItemsBeforeCleanup);
-
-            var bgRemoved = 0;
-            if (contentBounds) {
-                for (var i = doc.pathItems.length - 1; i >= 0; i--) {
-                    var path = doc.pathItems[i];
-                    if (isLikelyWhiteBackground(path, contentBounds)) {
-                        try {
-                            path.remove();
-                            bgRemoved++;
-                        } catch (e) {}
-                    }
-                }
+            // Step 1: Artboard set করো
+            if (!setArtboardRect(doc)) {
+                throw new Error("Could not set artboard");
             }
 
-            var vectorBounds = getNonWhiteVectorBounds(doc);
-            var imageBackgroundsRemoved = vectorBounds ?
-                removeFullBackgroundImages(doc, vectorBounds) : 0;
+            // Step 2: সব white elements remove করো
+            var whiteRemoved = removeAllWhiteElements(doc);
 
-            var items = getTopLevelItems(doc);
-            if (!items.length) {
-                throw new Error("No artwork remains after text/background cleanup.");
-            }
+            // Step 3: Remaining artwork center করো
+            centerArtwork(doc);
 
-            var layer = chooseUnlockedLayer(doc);
-            if (!layer) throw new Error("No visible, unlocked layer found.");
+            // Step 4: Final artboard verify করো
+            setArtboardRect(doc);
 
-            var group = layer.groupItems.add();
-            group.name = "Main Design";
-
-            var moved = 0;
-            for (var j = items.length - 1; j >= 0; j--) {
-                try {
-                    items[j].move(group, ElementPlacement.PLACEATEND);
-                    moved++;
-                } catch (moveError) {}
-            }
-
-            if (group.pageItems.length === 0) {
-                throw new Error("Grouping failed: the Main Design group is empty.");
-            }
-
-            var gb = getBounds(group);
-            if (!gb || widthOf(gb) <= 0 || heightOf(gb) <= 0) {
-                throw new Error("Could not measure the grouped artwork.");
-            }
-
-            var centerX = ART_LEFT + ART_WIDTH / 2;
-            var centerY = ART_TOP - ART_HEIGHT / 2;
-            group.position = [
-                centerX - widthOf(gb) / 2,
-                centerY + heightOf(gb) / 2
-            ];
-
-            resetAndVerifyArtboard(doc);
-
+            // Step 5: PNG export করো
             var baseName = svgFile.name.replace(/\.[^\.]+$/, "");
-            var outputFile = new File(outputFolder.fsName + "/" + baseName + ".eps");
+            var outputPath = outputFolder.fsName + "/" + baseName + ".png";
             var suffix = 1;
-            while (outputFile.exists) {
-                outputFile = new File(outputFolder.fsName + "/" + baseName + "_converted_" + suffix + ".eps");
+
+            while (new File(outputPath).exists) {
+                outputPath = outputFolder.fsName + "/" + baseName + "_" + suffix + ".png";
                 suffix++;
             }
 
-            var epsOptions = new EPSSaveOptions();
-            epsOptions.compatibility = Compatibility.ILLUSTRATOR10;
-            epsOptions.embedAllFonts = true;
-            epsOptions.embedLinkedFiles = true;
-            epsOptions.includeDocumentThumbnails = true;
+            if (!savePNG(doc, outputPath)) {
+                throw new Error("PNG export failed");
+            }
 
-            doc.saveAs(outputFile, epsOptions);
-
+            var outputFile = new File(outputPath);
             if (!outputFile.exists || outputFile.length <= 0) {
-                throw new Error("Output verification failed: EPS file is missing or empty.");
+                throw new Error("Output PNG is empty or missing");
             }
 
             return {
                 ok: true,
-                output: outputFile.fsName,
-                textRemoved: textRemoved,
-                backgroundsRemoved: bgRemoved,
-                imageBackgroundsRemoved: imageBackgroundsRemoved,
-                groupedItemsAttempted: items.length,
-                groupedItemsMoved: moved
+                output: outputPath,
+                whiteElementsRemoved: whiteRemoved
             };
         } catch (err) {
             return { ok: false, error: err.toString() };
         } finally {
             if (doc !== null) {
-                try { doc.close(SaveOptions.DONOTSAVECHANGES); } catch (closeErr) {}
+                try {
+                    doc.close(SaveOptions.DONOTSAVECHANGES);
+                } catch (e) {}
             }
         }
     }
 
-    var inputFolder = Folder.selectDialog("Select the folder containing SVG files");
+    // UI
+    var inputFolder = Folder.selectDialog("SVG files এর folder select করো");
     if (!inputFolder) {
-        alert("Cancelled: no input folder selected.");
+        alert("Cancelled");
         return;
     }
 
-    var outputFolder = Folder.selectDialog("Select the folder for EPS output");
+    var outputFolder = Folder.selectDialog("PNG output folder select করো");
     if (!outputFolder) {
-        alert("Cancelled: no output folder selected.");
+        alert("Cancelled");
         return;
     }
 
@@ -332,7 +215,7 @@
     });
 
     if (!svgFiles || svgFiles.length === 0) {
-        alert("No SVG files found in the selected input folder.");
+        alert("কোনো SVG file পাওয়া যায়নি");
         return;
     }
 
@@ -344,24 +227,19 @@
         var result = processFile(svgFiles[f], outputFolder);
         if (result.ok) {
             successes++;
-            log.push("OK: " + svgFiles[f].name +
-                " | text removed=" + result.textRemoved +
-                " | large white background paths removed=" + result.backgroundsRemoved +
-                " | full-size placed/raster images removed=" + result.imageBackgroundsRemoved +
-                " | grouped items moved=" + result.groupedItemsMoved +
-                "/" + result.groupedItemsAttempted);
+            log.push("✓ " + svgFiles[f].name + " → PNG (white removed: " + result.whiteElementsRemoved + ")");
         } else {
-            errors.push(svgFiles[f].name + " — " + result.error);
+            errors.push("✗ " + svgFiles[f].name + " — " + result.error);
         }
     }
 
-    var message = "SVG to Illustrator 10 EPS workflow finished.\n\n" +
-        "Input SVG files: " + svgFiles.length + "\n" +
-        "Successful: " + successes + "\n" +
+    var message = "PNG Conversion Complete!\n\n" +
+        "Total: " + svgFiles.length + "\n" +
+        "Success: " + successes + "\n" +
         "Failed: " + errors.length + "\n\n" +
-        "Output folder:\n" + outputFolder.fsName;
+        "Output: " + outputFolder.fsName + "\n\n";
 
-    if (log.length) message += "\n\nResults:\n" + log.join("\n");
+    if (log.length) message += log.join("\n");
     if (errors.length) message += "\n\nErrors:\n" + errors.join("\n");
 
     alert(message);
