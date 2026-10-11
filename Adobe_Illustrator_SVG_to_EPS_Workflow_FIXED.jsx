@@ -1,354 +1,535 @@
+/*
+Adobe Illustrator SVG -> EPS 10 Complete Automation Workflow
+FIXED & COMPLETE VERSION - Handles all requirements including:
+  ✓ Artboard creation & verification
+  ✓ Complete white background removal
+  ✓ Raster image background handling
+  ✓ Text frame removal
+  ✓ Group creation & centering
+  ✓ Artboard alignment verification
+  ✓ EPS export with proper settings
+
+USAGE
+1. Open Illustrator.
+2. File > Scripts > Other Script...
+3. Select this JSX file.
+4. Select input folder with SVG files.
+5. Select output folder for EPS files.
+6. Review the detailed report.
+*/
+
 #target illustrator
 
 (function () {
-    var svgInput = new File("/path/to/input.svg");
-    var outputFolder = new Folder("/path/to/output");
-    var pngOutput = new File(outputFolder.fsName + "/design_transparent.png");
-    var epsOutput = new File(outputFolder.fsName + "/design_illustrator10.eps");
+    // ARTBOARD SPECIFICATIONS
+    var ART_LEFT = 3500;
+    var ART_TOP = -2000;
+    var ART_WIDTH = 7000;
+    var ART_HEIGHT = 4000;
+    var ART_RECT = [
+        ART_LEFT,
+        ART_TOP,
+        ART_LEFT + ART_WIDTH,
+        ART_TOP - ART_HEIGHT
+    ];
 
-    if (!svgInput.exists) {
-        alert("SVG input file not found:\n" + svgInput.fsName);
-        return;
-    }
+    // ====== UTILITY FUNCTIONS ======
 
-    if (!outputFolder.exists) {
-        outputFolder.create();
-    }
-
-    var doc = app.documents.add();
-    doc.viewPreferences.rulerUnits = RulerUnits.points;
-    doc.usingLegacyFileCompatibility = false;
-
-    // 1) Create/fix the artboard to required exact settings
-    createOrFixArtboard(doc, 3500, -2000, 7000, 4000);
-
-    // 2) Import SVG
-    placeSvg(doc, svgInput);
-
-    // 3) Remove white background object(s)
-    removeWhiteBackground(doc);
-
-    // 4) Remove text objects
-    removeTextObjects(doc);
-
-    // 5) Group the design
-    var mainGroup = groupMainDesign(doc);
-
-    // 6) Align group to artboard center
-    centerGroupOnArtboard(doc, mainGroup);
-
-    // 7) Optional transparent PNG export
-    //     Uncomment if you need PNG output
-    // exportPNG(doc, pngOutput);
-
-    // 8) Save EPS as Illustrator 10
-    saveIllustrator10EPS(doc, epsOutput);
-
-    alert("Workflow complete.\n\nEPS saved to:\n" + epsOutput.fsName);
-})();
-
-function createOrFixArtboard(doc, x, y, width, height) {
-    // Illustrator artboardRect uses [left, top, right, bottom]
-    var left = x;
-    var top = y;
-    var right = x + width;
-    var bottom = y - height;
-
-    if (doc.artboards.length === 0) {
-        doc.artboards.add();
-    }
-
-    var artboard = doc.artboards[0];
-    artboard.artboardRect = [left, top, right, bottom];
-
-    // Preserve exact artboard position and dimensions by reapplying after import
-    // If locking is available in your Illustrator version, lock it here:
-    // artboard.locked = true;
-
-    // Make sure the first artboard is active
-    doc.artboards.setActiveArtboardIndex(0);
-}
-
-function placeSvg(doc, svgFile) {
-    var placed = doc.placedItems.add();
-    placed.file = svgFile;
-
-    // Place at default position; then we will align and clean afterwards
-    // Many SVGs have their own internal dimensions.
-    // If the SVG arrives as a linked item, the script still works on the content.
-    // If needed, change the file import method here.
-}
-
-function removeWhiteBackground(doc) {
-    var items = doc.pageItems;
-    var toRemove = [];
-
-    for (var i = 0; i < items.length; i++) {
-        var item = items[i];
-
-        // Skip invisible/locked items
-        if (!item.visible) continue;
-
-        // Ignore clipping masks etc. only when they are clearly part of design
-        if (item.typename === "TextFrame") continue;
-
-        // Detect large white background shapes:
-        // - large white rectangle/path
-        // - near-white fill
-        // - occupies a large area of artboard
-        var fillColor = getFillColor(item);
-        var strokeColor = getStrokeColor(item);
-        var area = getItemArea(item);
-
-        var isLargeWhiteShape = false;
-
-        if (fillColor && isNearWhite(fillColor) && !hasNonWhiteArtwork(item)) {
-            if (area > 0.15 * getArtboardArea(doc)) {
-                isLargeWhiteShape = true;
-            }
-        }
-
-        // Also detect plain white rectangles/photos
-        if (item.typename === "Rectangle" || item.typename === "PathItem") {
-            if (isNearWhite(fillColor) && area > 0.12 * getArtboardArea(doc)) {
-                isLargeWhiteShape = true;
-            }
-        }
-
-        if (isLargeWhiteShape) {
-            toRemove.push(item);
-        }
-    }
-
-    // Remove in reverse order to avoid collection issues
-    for (var j = toRemove.length - 1; j >= 0; j--) {
+    function getBounds(item) {
         try {
-            toRemove[j].remove();
-        } catch (e) {
-            // ignore if a piece is already gone
-        }
-    }
-}
-
-function removeTextObjects(doc) {
-    var textItems = [];
-    for (var i = 0; i < doc.textFrames.length; i++) {
-        textItems.push(doc.textFrames[i]);
-    }
-
-    for (var j = 0; j < doc.pageItems.length; j++) {
-        var item = doc.pageItems[j];
-        if (item.typename === "TextFrame") {
-            textItems.push(item);
-        }
-    }
-
-    for (var k = 0; k < textItems.length; k++) {
+            var vb = item.visibleBounds;
+            if (vb && vb[0] !== Infinity) return vb;
+        } catch (e) {}
         try {
-            textItems[k].remove();
-        } catch (e) {
-            // ignore
-        }
-    }
-
-    // Some text may be converted to outlines/paths.
-    // We can also remove white/near-white object paths that are very small and text-like.
-    // This is heuristic, not perfect on all SVGs.
-    var items = doc.pageItems;
-    for (var i = items.length - 1; i >= 0; i--) {
-        var item = items[i];
-        if (!item.visible) continue;
-
-        if (item.typename === "PathItem" || item.typename === "CompoundPathItem") {
-            var fill = getFillColor(item);
-            if (fill && isNearWhite(fill)) {
-                var bounds = item.visibleBounds;
-                var w = Math.abs(bounds[2] - bounds[0]);
-                var h = Math.abs(bounds[1] - bounds[3]);
-                if (w < 50 && h < 50) {
-                    // likely decorative text/letter fragments
-                    try {
-                        item.remove();
-                    } catch (e) {}
-                }
-            }
-        }
-    }
-}
-
-function groupMainDesign(doc) {
-    var selected = [];
-    var items = doc.pageItems;
-
-    for (var i = 0; i < items.length; i++) {
-        var item = items[i];
-        if (!item.visible) continue;
-        if (item.locked) continue;
-
-        // Skip background-like things and pure text
-        if (item.typename === "TextFrame") continue;
-
-        var fill = getFillColor(item);
-        if (fill && isNearWhite(fill)) {
-            var area = getItemArea(item);
-            var artArea = getArtboardArea(doc);
-            if (area > 0.12 * artArea) continue; // likely background
-        }
-
-        selected.push(item);
-    }
-
-    if (selected.length === 0) {
-        alert("No design items were detected to group.");
+            var gb = item.geometricBounds;
+            if (gb && gb[0] !== Infinity) return gb;
+        } catch (e2) {}
         return null;
     }
 
-    // Deselect everything
-    doc.selection = null;
+    function widthOf(b) { return b ? Math.abs(b[2] - b[0]) : 0; }
+    function heightOf(b) { return b ? Math.abs(b[1] - b[3]) : 0; }
 
-    // Select the likely design items
-    doc.selection = selected;
+    function isInfinityBounds(b) {
+        return !b || b[0] === Infinity || b[2] === -Infinity;
+    }
 
-    // Create group
-    var group = doc.groupItems.add();
-    group.name = "MainDesign";
+    function unionBounds(items) {
+        var u = null;
+        for (var i = 0; i < items.length; i++) {
+            var b = getBounds(items[i]);
+            if (!b || isInfinityBounds(b)) continue;
+            if (!u) {
+                u = [b[0], b[1], b[2], b[3]];
+            } else {
+                u[0] = Math.min(u[0], b[0]);
+                u[1] = Math.max(u[1], b[1]);
+                u[2] = Math.max(u[2], b[2]);
+                u[3] = Math.min(u[3], b[3]);
+            }
+        }
+        return u;
+    }
 
-    // Move selected items into group
-    for (var j = selected.length - 1; j >= 0; j--) {
+    // ====== COLOR DETECTION ======
+
+    function isWhite(color) {
+        if (!color) return false;
         try {
-            selected[j].move(group, ElementPlacement.INSIDE);
+            if (color.typename === "RGBColor") {
+                return color.red >= 253 && color.green >= 253 && color.blue >= 253;
+            }
+            if (color.typename === "GrayColor") {
+                return color.gray >= 98;
+            }
+            if (color.typename === "CMYKColor") {
+                return color.cyan <= 1.5 && color.magenta <= 1.5 &&
+                       color.yellow <= 1.5 && color.black <= 1.5;
+            }
+            if (color.typename === "SpotColor") {
+                return isWhite(color.spot.color);
+            }
         } catch (e) {}
-    }
-
-    // Ensure group is selected
-    doc.selection = null;
-    group.selected = true;
-    return group;
-}
-
-function centerGroupOnArtboard(doc, group) {
-    if (!group) return;
-
-    var artboard = doc.artboards[0];
-    var rect = artboard.artboardRect;
-
-    var left = rect[0];
-    var top = rect[1];
-    var right = rect[2];
-    var bottom = rect[3];
-    var cx = (left + right) / 2;
-    var cy = (top + bottom) / 2;
-
-    doc.selection = null;
-    group.selected = true;
-
-    // Align group to artboard center
-    try {
-        group.align(AlignType.HORIZONTALCENTERS, AlignTo.ARTBOARD);
-        group.align(AlignType.VERTICALCENTERS, AlignTo.ARTBOARD);
-    } catch (e) {
-        // Fallback: position by bounds
-        var bounds = group.visibleBounds;
-        var groupW = Math.abs(bounds[2] - bounds[0]);
-        var groupH = Math.abs(bounds[1] - bounds[3]);
-
-        var newX = cx - (groupW / 2);
-        var newY = cy + (groupH / 2);
-        group.position = [newX, newY];
-    }
-
-    // Final verification by re-centering
-    var finalBounds = group.visibleBounds;
-    var finalW = Math.abs(finalBounds[2] - finalBounds[0]);
-    var finalH = Math.abs(finalBounds[1] - finalBounds[3]);
-
-    // If group drifted, center it again
-    group.position = [cx - (finalW / 2), cy + (finalH / 2)];
-}
-
-function saveIllustrator10EPS(doc, epsFile) {
-    var options = new EPSSaveOptions();
-    options.cmykPostScript = false;
-    options.embedLinkedFiles = false;
-    options.saveMultipleArtboards = false;
-    options.compatibility = Compatibility.ILLUSTRATOR10;
-
-    doc.saveAs(epsFile, options);
-}
-
-function exportPNG(doc, pngFile) {
-    var options = new ExportOptionsPNG24();
-    options.artBoardClipping = true;
-    options.transparent = true;
-    options.antiAliasing = true;
-    options.transparency = true;
-
-    doc.exportFile(pngFile, ExportType.PNG24, options);
-}
-
-function getArtboardArea(doc) {
-    var artboard = doc.artboards[0].artboardRect;
-    var w = Math.abs(artboard[2] - artboard[0]);
-    var h = Math.abs(artboard[1] - artboard[3]);
-    return w * h;
-}
-
-function getItemArea(item) {
-    try {
-        var bounds = item.visibleBounds;
-        var w = Math.abs(bounds[2] - bounds[0]);
-        var h = Math.abs(bounds[1] - bounds[3]);
-        return w * h;
-    } catch (e) {
-        return 0;
-    }
-}
-
-function getFillColor(item) {
-    try {
-        if (item.filled && item.fillColor) {
-            return item.fillColor;
-        }
-    } catch (e) {}
-    return null;
-}
-
-function getStrokeColor(item) {
-    try {
-        if (item.stroked && item.strokeColor) {
-            return item.strokeColor;
-        }
-    } catch (e) {}
-    return null;
-}
-
-function hasNonWhiteArtwork(item) {
-    try {
-        var fill = item.fillColor;
-        if (fill && !isNearWhite(fill)) return true;
-
-        var stroke = item.strokeColor;
-        if (stroke && !isNearWhite(stroke)) return true;
-    } catch (e) {}
-
-    return false;
-}
-
-function isNearWhite(color) {
-    // Accept RGB/CMYK color objects from Illustrator
-    var r = 0, g = 0, b = 0;
-    try {
-        if (color instanceof RGBColor) {
-            r = color.red; g = color.green; b = color.blue;
-        } else if (color instanceof CMYKColor) {
-            r = (1 - color.cyan) * 255;
-            g = (1 - color.magenta) * 255;
-            b = (1 - color.yellow) * 255;
-        }
-    } catch (e) {
         return false;
     }
 
-    var threshold = 245;
-    return (r > threshold && g > threshold && b > threshold);
-}
+    // ====== BACKGROUND DETECTION & REMOVAL ======
+
+    function isLikelyWhiteBackground(path, contentBounds) {
+        if (!path || path.typename !== "PathItem" || !contentBounds) return false;
+        try {
+            if (!path.filled || path.stroked || !path.closed) return false;
+            if (path.pathPoints.length > 12 || !isWhite(path.fillColor)) return false;
+
+            var b = getBounds(path);
+            if (!b || isInfinityBounds(b)) return false;
+
+            var cw = widthOf(contentBounds);
+            var ch = heightOf(contentBounds);
+            var pw = widthOf(b);
+            var ph = heightOf(b);
+
+            if (cw <= 0 || ch <= 0 || pw <= 0 || ph <= 0) return false;
+
+            // White rectangle covers or substantially surrounds content
+            var tolX = cw * 0.05;
+            var tolY = ch * 0.05;
+            var coversContent = b[0] <= contentBounds[0] + tolX &&
+                                b[1] >= contentBounds[1] - tolY &&
+                                b[2] >= contentBounds[2] - tolX &&
+                                b[3] <= contentBounds[3] + tolY;
+            var substantiallyLarger = pw >= cw * 0.85 && ph >= ch * 0.85;
+
+            return coversContent && substantiallyLarger;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function getNonWhiteVectorBounds(doc) {
+        var items = [];
+        try {
+            for (var i = 0; i < doc.pathItems.length; i++) {
+                var p = doc.pathItems[i];
+                try {
+                    if (p.hidden || p.guides || p.clipping) continue;
+                    // Exclude pure white paths to avoid background defining bounds
+                    if (p.filled && isWhite(p.fillColor) && !p.stroked) continue;
+                    items.push(p);
+                } catch (e) {}
+            }
+        } catch (e) {}
+        return unionBounds(items);
+    }
+
+    function isImageItem(item) {
+        try {
+            return item.typename === "PlacedItem" || item.typename === "RasterItem";
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function getVectorBounds(doc) {
+        var paths = [];
+        try {
+            for (var i = 0; i < doc.pathItems.length; i++) {
+                var p = doc.pathItems[i];
+                try {
+                    if (!p.hidden && !p.guides && !p.clipping) paths.push(p);
+                } catch (e) {}
+            }
+        } catch (e) {}
+        return unionBounds(paths);
+    }
+
+    function isLikelyFullBackgroundImage(item, vectorBounds) {
+        if (!item || !isImageItem(item) || !vectorBounds) return false;
+        try {
+            if (item.hidden || item.locked) return false;
+            var b = getBounds(item);
+            if (!b || isInfinityBounds(b)) return false;
+
+            var vw = widthOf(vectorBounds);
+            var vh = heightOf(vectorBounds);
+            var iw = widthOf(b);
+            var ih = heightOf(b);
+
+            if (vw <= 0 || vh <= 0 || iw <= 0 || ih <= 0) return false;
+
+            // Calculate overlap
+            var overlapLeft = Math.max(b[0], vectorBounds[0]);
+            var overlapTop = Math.min(b[1], vectorBounds[1]);
+            var overlapRight = Math.min(b[2], vectorBounds[2]);
+            var overlapBottom = Math.max(b[3], vectorBounds[3]);
+            var overlapW = Math.max(0, overlapRight - overlapLeft);
+            var overlapH = Math.max(0, overlapTop - overlapBottom);
+            var vectorCoverage = (overlapW * overlapH) / (vw * vh);
+
+            var containsVector = b[0] <= vectorBounds[0] + vw * 0.03 &&
+                                 b[1] >= vectorBounds[1] - vh * 0.03 &&
+                                 b[2] >= vectorBounds[2] - vw * 0.03 &&
+                                 b[3] <= vectorBounds[3] + vh * 0.03;
+
+            return containsVector && vectorCoverage >= 0.95 &&
+                   iw >= vw * 0.95 && ih >= vh * 0.95;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function removeFullBackgroundImages(doc, vectorBounds) {
+        var removed = 0;
+        try {
+            for (var i = doc.pageItems.length - 1; i >= 0; i--) {
+                var item = doc.pageItems[i];
+                if (isLikelyFullBackgroundImage(item, vectorBounds)) {
+                    try {
+                        item.remove();
+                        removed++;
+                    } catch (e) {}
+                }
+            }
+        } catch (e) {}
+        return removed;
+    }
+
+    // ====== LAYER & GROUP OPERATIONS ======
+
+    function getTopLevelItems(doc) {
+        var items = [];
+        try {
+            for (var li = 0; li < doc.layers.length; li++) {
+                var layer = doc.layers[li];
+                if (!layer.visible || layer.locked) continue;
+
+                for (var pi = layer.pageItems.length - 1; pi >= 0; pi--) {
+                    var item = layer.pageItems[pi];
+                    try {
+                        if (item.parent === layer && !item.locked && !item.hidden) {
+                            items.push(item);
+                        }
+                    } catch (e) {}
+                }
+            }
+        } catch (e) {}
+        return items;
+    }
+
+    function removeLiveText(doc) {
+        var removed = 0;
+        try {
+            for (var i = doc.textFrames.length - 1; i >= 0; i--) {
+                try {
+                    doc.textFrames[i].remove();
+                    removed++;
+                } catch (e) {}
+            }
+        } catch (e) {}
+        return removed;
+    }
+
+    function chooseUnlockedLayer(doc) {
+        try {
+            for (var i = 0; i < doc.layers.length; i++) {
+                if (doc.layers[i].visible && !doc.layers[i].locked) {
+                    return doc.layers[i];
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    // ====== ARTBOARD OPERATIONS ======
+
+    function resetAndVerifyArtboard(doc) {
+        try {
+            if (!doc.artboards || doc.artboards.length < 1) {
+                doc.artboards.add(ART_RECT);
+            }
+            doc.artboards[0].artboardRect = ART_RECT;
+
+            var actual = doc.artboards[0].artboardRect;
+            for (var i = 0; i < 4; i++) {
+                if (Math.abs(actual[i] - ART_RECT[i]) > 0.5) {
+                    throw new Error("Artboard verification failed. Expected: " + 
+                        ART_RECT.join(", ") + " | Actual: " + actual.join(", "));
+                }
+            }
+            return true;
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    function centerGroupOnArtboard(group, doc) {
+        try {
+            if (!group || !doc.artboards || doc.artboards.length < 1) {
+                throw new Error("Cannot center: invalid group or missing artboard.");
+            }
+
+            var gb = getBounds(group);
+            if (!gb || isInfinityBounds(gb)) {
+                throw new Error("Cannot measure group bounds for centering.");
+            }
+
+            var artRect = doc.artboards[0].artboardRect;
+            var centerX = artRect[0] + (artRect[2] - artRect[0]) / 2;
+            var centerY = artRect[1] - (artRect[1] - artRect[3]) / 2;
+            var groupWidth = widthOf(gb);
+            var groupHeight = heightOf(gb);
+
+            if (groupWidth <= 0 || groupHeight <= 0) {
+                throw new Error("Invalid group dimensions: " + groupWidth + " x " + groupHeight);
+            }
+
+            // Position group center at artboard center
+            group.position = [
+                centerX - groupWidth / 2,
+                centerY + groupHeight / 2
+            ];
+
+            return true;
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    // ====== MAIN PROCESSING FUNCTION ======
+
+    function processFile(svgFile, outputFolder) {
+        var doc = null;
+        var report = {
+            ok: false,
+            filename: svgFile.name,
+            output: null,
+            error: null,
+            steps: {}
+        };
+
+        try {
+            // STEP 1: OPEN & SETUP ARTBOARD
+            doc = app.open(svgFile);
+            if (!doc) throw new Error("Failed to open SVG file.");
+
+            report.steps.artboardSetup = "Setting up artboard...";
+            resetAndVerifyArtboard(doc);
+            report.steps.artboardSetup = "✓ Artboard created and verified: " + ART_RECT.join(", ");
+
+            // STEP 2: REMOVE LIVE TEXT
+            report.steps.textRemoval = "Removing live text frames...";
+            var textRemoved = removeLiveText(doc);
+            report.steps.textRemoval = "✓ Removed " + textRemoved + " text frame(s)";
+
+            // STEP 3: GET CONTENT BOUNDS (excluding white background)
+            report.steps.boundsCalculation = "Calculating content bounds...";
+            var contentBounds = getNonWhiteVectorBounds(doc);
+            report.steps.boundsCalculation = "✓ Content bounds calculated";
+
+            // STEP 4: REMOVE SIMPLE WHITE BACKGROUND PATHS
+            report.steps.whitePathRemoval = "Removing white background paths...";
+            var bgRemoved = 0;
+            if (contentBounds && !isInfinityBounds(contentBounds)) {
+                for (var i = doc.pathItems.length - 1; i >= 0; i--) {
+                    var path = doc.pathItems[i];
+                    if (isLikelyWhiteBackground(path, contentBounds)) {
+                        try {
+                            path.remove();
+                            bgRemoved++;
+                        } catch (e) {}
+                    }
+                }
+            }
+            report.steps.whitePathRemoval = "✓ Removed " + bgRemoved + " white background path(s)";
+
+            // STEP 5: REMOVE FULL-BACKGROUND RASTER/PLACED IMAGES
+            report.steps.imageBackgroundRemoval = "Checking for background images...";
+            var vectorBounds = getNonWhiteVectorBounds(doc);
+            var imageBackgroundsRemoved = 0;
+            if (vectorBounds && !isInfinityBounds(vectorBounds)) {
+                imageBackgroundsRemoved = removeFullBackgroundImages(doc, vectorBounds);
+            }
+            report.steps.imageBackgroundRemoval = "✓ Removed " + imageBackgroundsRemoved + 
+                " background image(s)";
+
+            // STEP 6: VERIFY REMAINING ARTWORK
+            report.steps.artworkVerification = "Verifying remaining artwork...";
+            var items = getTopLevelItems(doc);
+            if (!items || items.length === 0) {
+                throw new Error("No artwork remains after cleanup. Check if design is entirely white or a single raster image.");
+            }
+            report.steps.artworkVerification = "✓ Found " + items.length + " top-level item(s)";
+
+            // STEP 7: GROUP ARTWORK
+            report.steps.grouping = "Grouping artwork...";
+            var layer = chooseUnlockedLayer(doc);
+            if (!layer) throw new Error("No visible, unlocked layer available.");
+
+            var group = layer.groupItems.add();
+            group.name = "Main Design";
+
+            var moved = 0;
+            for (var j = items.length - 1; j >= 0; j--) {
+                try {
+                    items[j].move(group, ElementPlacement.PLACEATEND);
+                    moved++;
+                } catch (moveError) {}
+            }
+
+            if (group.pageItems.length === 0) {
+                throw new Error("Grouping failed: Main Design group is empty.");
+            }
+            report.steps.grouping = "✓ Grouped " + moved + "/" + items.length + " items";
+
+            // STEP 8: CENTER GROUP ON ARTBOARD
+            report.steps.alignment = "Centering design on artboard...";
+            centerGroupOnArtboard(group, doc);
+            report.steps.alignment = "✓ Design centered on artboard";
+
+            // STEP 9: FINAL ARTBOARD VERIFICATION
+            report.steps.finalArtboardCheck = "Final artboard verification...";
+            resetAndVerifyArtboard(doc);
+            report.steps.finalArtboardCheck = "✓ Artboard verified";
+
+            // STEP 10: SAVE AS EPS
+            report.steps.epsSave = "Saving as EPS...";
+            var baseName = svgFile.name.replace(/\.[^\.]+$/, "");
+            var outputFile = new File(outputFolder.fsName + "/" + baseName + ".eps");
+            var suffix = 1;
+
+            while (outputFile.exists) {
+                outputFile = new File(outputFolder.fsName + "/" + baseName + 
+                    "_converted_" + suffix + ".eps");
+                suffix++;
+            }
+
+            var epsOptions = new EPSSaveOptions();
+            epsOptions.compatibility = Compatibility.ILLUSTRATOR10;
+            epsOptions.embedAllFonts = true;
+            epsOptions.embedLinkedFiles = true;
+            epsOptions.includeDocumentThumbnails = true;
+
+            doc.saveAs(outputFile, epsOptions);
+
+            if (!outputFile.exists || outputFile.length <= 0) {
+                throw new Error("EPS save verification failed: file missing or empty.");
+            }
+
+            report.steps.epsSave = "✓ Saved: " + outputFile.fsName;
+            report.ok = true;
+            report.output = outputFile.fsName;
+
+            return report;
+
+        } catch (err) {
+            report.error = err.toString();
+            report.ok = false;
+            return report;
+
+        } finally {
+            if (doc !== null) {
+                try {
+                    doc.close(SaveOptions.DONOTSAVECHANGES);
+                } catch (closeErr) {}
+            }
+        }
+    }
+
+    // ====== MAIN WORKFLOW ======
+
+    var inputFolder = Folder.selectDialog("Select folder containing SVG files");
+    if (!inputFolder) {
+        alert("Cancelled: no input folder selected.");
+        return;
+    }
+
+    var outputFolder = Folder.selectDialog("Select folder for EPS output");
+    if (!outputFolder) {
+        alert("Cancelled: no output folder selected.");
+        return;
+    }
+
+    var svgFiles = inputFolder.getFiles(function (f) {
+        return f instanceof File && /\.svg$/i.test(f.name);
+    });
+
+    if (!svgFiles || svgFiles.length === 0) {
+        alert("No SVG files found in the selected input folder.");
+        return;
+    }
+
+    alert("Processing " + svgFiles.length + " SVG file(s)...\n\nInput: " + 
+        inputFolder.fsName + "\nOutput: " + outputFolder.fsName);
+
+    var results = [];
+    var successCount = 0;
+
+    for (var f = 0; f < svgFiles.length; f++) {
+        var result = processFile(svgFiles[f], outputFolder);
+        results.push(result);
+        if (result.ok) successCount++;
+    }
+
+    // ====== GENERATE REPORT ======
+
+    var reportText = "SVG to Illustrator 10 EPS Automation - Complete Report\n";
+    reportText += "=========================================================\n\n";
+    reportText += "Input folder: " + inputFolder.fsName + "\n";
+    reportText += "Output folder: " + outputFolder.fsName + "\n";
+    reportText += "Total files: " + svgFiles.length + "\n";
+    reportText += "Successful: " + successCount + "\n";
+    reportText += "Failed: " + (svgFiles.length - successCount) + "\n\n";
+
+    reportText += "ARTBOARD SPECIFICATION:\n";
+    reportText += "  Position: (" + ART_LEFT + ", " + ART_TOP + ")\n";
+    reportText += "  Size: " + ART_WIDTH + " x " + ART_HEIGHT + " pt\n";
+    reportText += "  Rect: " + ART_RECT.join(", ") + "\n\n";
+
+    for (var r = 0; r < results.length; r++) {
+        var res = results[r];
+        reportText += "--- " + (r + 1) + ". " + res.filename + " ---\n";
+
+        if (res.ok) {
+            reportText += "Status: ✓ SUCCESS\n";
+            reportText += "Output: " + res.output + "\n";
+            for (var key in res.steps) {
+                reportText += "  " + res.steps[key] + "\n";
+            }
+        } else {
+            reportText += "Status: ✗ FAILED\n";
+            reportText += "Error: " + res.error + "\n";
+        }
+        reportText += "\n";
+    }
+
+    alert(reportText);
+
+    // Save report to file
+    var reportFile = new File(outputFolder.fsName + "/SVG_to_EPS_Report_" + 
+        new Date().getTime() + ".txt");
+    reportFile.encoding = "UTF-8";
+    reportFile.open("w");
+    reportFile.write(reportText);
+    reportFile.close();
+
+})();
